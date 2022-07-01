@@ -7,7 +7,7 @@
 # This python script contains an implementation of a scattering matrix approach used to calculate the current density
 # of an S/F/S hybrid structure depending on various parameters such as temperature or polarization strength.
 # The script was created in the scope of my Bachelors thesis, in which the calculations and details are explained.
-# The full thesis can be found at (INSERT GIT REPOSITORY).
+# The full thesis can be found at https://github.com/lKollwitz/bachelor_thesis.
 
 
 # necessary libraries to run the script
@@ -408,18 +408,26 @@ def calc_g1(tau, g0_ul):
     # tau: complex 4x4 matrix, hopping amplitude in particle hole space
     # g0_ul: complex 4x4 matrix, g0 for the right side of the interface, see function above
     #
-    # returns complex 4x4 matrix g1, see Eq. (2.53) in thesis
+    # returns complex 4x4 matrix g1, see Eq. (1.53) in thesis
     return tau @ g0_ul @ dagger(tau)
 
 
 @jit(nopython=True)
 def calc_t_hat(g0, g1):
+    # g0: complex 4x4 matrix, see calc_g0
+    # g1: complex 4x4 matrix, see calc_g1
+    #
+    # returns complex 4x4 t-matrix, see Eq. (1.54) in thesis
     mat1 = np.linalg.inv(ID4 + (g1 @ g0))
     return mat1 @ g1
 
 
 @jit(nopython=True)
 def calc_g_in_g_out(g0, t_hat):
+    # g0: complex 4x4 matrix, see calc_g0
+    # t_hat: complex 4x4 matrix, see calc_t_hat
+    #
+    # returns two complex 4x4 t-matrices, see Eq. (1.55) and (1.56) in thesis
     g0p1 = g0 + ID4
     g0m1 = g0 - ID4
 
@@ -431,6 +439,12 @@ def calc_g_in_g_out(g0, t_hat):
 
 @jit(nopython=True)
 def calc_I(g_in, g_out, sqrtS, sqrtSd):
+    # g_in: complex 4x4 matrix, see calc_g_in_g_out
+    # g_out: complex 4x4 matrix, see calc_g_in_g_out
+    # sqrtSd: complex 4x4 matrix, left matrix in Eq. (2.48)
+    # sqrtSd: complex 4x4 matrix, hermitian conjugate of left matrix in Eq. (2.48)
+    #
+    # returns complex 4x4 matrix current, see Eq. (1.57) in thesis
     mat1 = sqrtS @ g_out @ sqrtSd
     mat2 = sqrtSd @ g_in @ sqrtS
 
@@ -439,14 +453,24 @@ def calc_I(g_in, g_out, sqrtS, sqrtSd):
 
 @jit(nopython=True)
 def integrand_I(k_p, energy, params):
+    # kp: real float, momentum component parallel to the interface
+    # energy: real float, energy for the Green's function
+    # params: complex array, parameters of the system
+    #
+    # returns complex 4x4 matrix current I. Basically the explicit
+    # implementation instead of just the definition found in the function above
+
+    # calculate auxiliary scattering matrix (ph-space) and roots
     S, Sul = calc_S_Sul(k_p, params)
     sqrtS = calc_sqrt_S(S)
     sqrtSul = calc_sqrt_S(Sul)
     sqrtSd = dagger(sqrtS)
     sqrtSuld = dagger(sqrtSul)
 
+    # hopping amplitudes in ph-space
     tau, tau_ul = calc_tau_tau_ul(k_p, sqrtSd, sqrtSuld, params)
 
+    # isotropic Green's functions left and right to the interface
     G_hom = calc_G_hom(energy, params, ul=False)
     G_hom_ul = calc_G_hom(energy, params, ul=True)
     G1 = calc_G12(G_hom, sqrtS, sqrtSd)
@@ -454,32 +478,36 @@ def integrand_I(k_p, energy, params):
     G1_ul = calc_G12(G_hom_ul, sqrtSul, sqrtSuld)
     G2_ul = calc_G12(G_hom_ul, sqrtSuld, sqrtSul)
 
+    # auxiliary ballistic propagators
     g0 = calc_g0(G1, G2)
     g0_ul = calc_g0(G1_ul, G2_ul)
-
     g1 = calc_g1(tau, g0_ul)
     g1_ul = calc_g1(tau_ul, g0)
 
+    # t-matrix
     t_hat = calc_t_hat(g0, g1)
-    t_hau_ul = calc_t_hat(g0_ul, g1_ul)
 
+    # incoming and outgoing ballistic propagators
     g_in, g_out = calc_g_in_g_out(g0, t_hat)
-    #g_in_ul, g_out_ul = calc_g_in_g_out(g0_ul, t_hau_ul)
 
+    # explicit matrix current
     I = calc_I(g_in, g_out, sqrtS, sqrtSd)
-    #I_ul = calc_I(g_in_ul, g_out_ul, sqrtSul, sqrtSuld)
 
     return I
 
 
 @jit(nopython=True)
-def integrate_I(energy, params, points=2000):
-    #only main diagonal is integrated, everything else is set to 0
+def integrate_I(energy, params, points=300):
+    # energy: real float, energy for the Green's function
+    # params: complex array, parameters of the system
+    # points: int, number of points used for integration. For most parameters 300 is sufficient
+    #
+    # returns complex float, value of the integral in Eq. (1.58) in thesis without any physical constants
 
+    # get relevant parameters
     e_f = params[0]
     v1 = params[1]
     v3 = params[4]
-    k0 = params[5]
 
     v_min = np.min(np.array([v1, v3]))
     k_max = cmath.sqrt(2*(e_f - v_min))
@@ -490,20 +518,27 @@ def integrate_I(energy, params, points=2000):
 
     for i, kp in enumerate(k_p_arr):
         I_temp = integrand_I(kp, energy, params)
-        I[i] = I_temp * kp #2 dimensional
+        I[i] = I_temp * kp  # 2 dimensional
 
     int_I = np.zeros((4, 4), dtype=np.complex_)
 
+    # only main diagonal is integrated, everything else is set to 0
     for i in range(4):
         int_I[i, i] = np.trapz(I[:, i, i], k_p_arr)
 
-    return int_I / (2 * np.pi) # one factor of two pi cancels with integration over the angle
+    return int_I / (2 * np.pi)  # one factor of two pi cancels with integration over the angle
 
 
 def integrand_j(energy, params, points=300):
+    # energy: real float, energy for the Green's function
+    # params: complex array, parameters of the system
+    # points: int, number of points used for integration. For most parameters 300 is sufficient
+    #
+    # returns complex float, spectrum of the current density, Eq. (2.38) without the physical constants. Sign cancels
+    # with the one from Eq. (1.58)
+
     params = tuple(params)
     G_grad_G = integrate_I(energy, params, points=points)
-    # G_grad_G = integrate_I(energy, params)
     mat1 = TAU3 @ G_grad_G
 
     return 0.125 * 2 * np.trace(mat1)
@@ -511,17 +546,33 @@ def integrand_j(energy, params, points=300):
 
 @jit(nopython=True)
 def energy_domain(E_cutoff, delta, points):
+    # E_cutoff: real float, boundary of the integration domain for integral in Eq. (2.40)
+    # delta: complex float, order parameter
+    # point: int, number of sample points in the domain
+    #
+    # returns real array of energies with non-uniform sample point distribution. Most of the points lie within the
+    # energy gap and only few far away from the gap, where the contributions to the current density are small
     d = np.abs(delta)
+
+    # number of points in each outer part (positive and negative energies) of the domain
     p0 = int(0.10*points)
+
+    # number of points closely outside the energy gap, for each side
     p1 = int(0.20*points)
+
+    # number of points within the energy gap
     p2 = points - 2 * p1 - 2 * p0
 
+    # region 0 far away from the energy gap
     e0_neg = np.linspace(-E_cutoff, -5*d, p0+1)[:-1]
+
+    # region 1 closely outside the energy gap
     e1_neg = np.linspace(-5*d, -d, p1+1)[:-1]
-    #for kernel plots
-    # e0_neg = np.linspace(-E_cutoff, -1.5*d, p0+1)[:-1]
-    # e1_neg = np.linspace(-1.5*d, -d, p1+1)[:-1]
+
+    # region within the energy gap
     e2 = np.linspace(-d, d, p2)
+
+    # extending to positive energies
     e1_pos = -e1_neg[::-1]
     e0_pos = -e0_neg[::-1]
 
@@ -530,12 +581,28 @@ def energy_domain(E_cutoff, delta, points):
     return e
 
 
-def integrand_j_enhance_peaks(energy_arr, j_kernel, params, points_peak=20, width_peak=2):
-    i_max = np.argmax(np.abs(j_kernel))
+def integrand_j_enhance_peaks(energy_arr, j_spectrum, params, points_peak=20, width_peak=2):
+    # energy_arr: float array, domain for the evaluation of spectrum of j
+    # j_spectrum: complex array, spectrum of j evaluated at the energies from energy_arr
+    # params: complex array, parameters of the system
+    # points_peak: int, number of additional points around the peak
+    # width: real float, width around the peak
+    #
+    # returns real float array, complex float array of energy and spectrum of j with additional points around the
+    # maximum of the spectrum. Only need when integrating along contour E+i*delta. When integration over negative and
+    # positive energies, it might be a good idea to do the same with the minimum as well.
+
+    # index, where the maximum occurs
+    i_max = np.argmax(np.abs(j_spectrum))
+
+    # energy, where the mximum occurs
     e_max = energy_arr[i_max]
+
+    # additional energies around the maximum
     e_max_arr = np.linspace(e_max-width_peak, e_max+width_peak, points_peak)
     j_peak = np.zeros(points_peak, dtype=np.complex_)
 
+    # evaluate spectrum j around the peak
     for i, e in enumerate(e_max_arr):
         try:
             j_peak[i] = integrand_j(e, tuple(params))
@@ -543,37 +610,55 @@ def integrand_j_enhance_peaks(energy_arr, j_kernel, params, points_peak=20, widt
             j_peak[i] = np.NaN
             print("Error in enhance for E = %s" % e)
 
+    # combine original and additional values
     e_arr_all = np.concatenate((energy_arr, e_max_arr))
-    j_arr_all = np.concatenate((j_kernel, j_peak))
-
+    j_arr_all = np.concatenate((j_spectrum, j_peak))
     ind_sorted = np.argsort(e_arr_all)
 
     return e_arr_all[ind_sorted], j_arr_all[ind_sorted]
 
 
 def integrate_j(params, E_cutoff=30, points=300):
+    # params: complex array, parameters of the system
+    # E_cutoff: real float, boundary of the integration domain for integral in Eq. (2.40)
+    # points: int, number of points used for the integration of j
+    #
+    # returns real float, current density j without the physical constants
+
+    # get relevant parameters
     delta = params[8]
     temp = params[11]
     delta_contour = params[12]
 
+    # init energy and j array
     energy = energy_domain(E_cutoff, delta, points)
     dj_dE = np.zeros(points, dtype=np.complex_)
 
+    # evaluate j for each energy
     for k, e in enumerate(energy):
         integ = integrand_j(e, tuple(params), points=points)
         dj_dE[k] = integ
 
+    # # maybe get better resolution of possible peaks
     # energy, dj_dE = integrand_j_enhance_peaks(energy, dj_dE, params)
 
+    # get values along the contour
     z = calc_z(energy, temp, delta_contour)
     dz_de = calc_dz_de(energy, delta_contour)
 
+    # full integrand of Eg. (2.40)
     full_integ = np.tanh(z/(2*temp)) * dj_dE * dz_de
 
     return np.real(np.trapz(full_integ, energy))
 
 
 def calc_delta(params, phi):
+    # params: complex array, parameters of the system
+    # phi: real float, phase difference between the order parameters
+    #
+    # returns complex float, order parameter after Eq. (1.30)
+
+    # get relevant parameters
     Tc = params[10]
     temp = params[11]
 
@@ -585,16 +670,29 @@ def calc_delta(params, phi):
     if temp == 0:
         return Delta_0 * np.exp(1j * phi)
 
+
 def plot_j_kernel_phi(E_cutoff, phi_arr, points, params, save_string):
+    # E_cutoff: real float, boundary of the integration domain for spectrum of j
+    # phi_arr: real float array, phase differences of the order parameters. One plot for each
+    # points: int, number of points of the plot
+    # params: complex array, parameters of the system
+    # save_string: string or not string, used to name saved data. if not string, nothing will be saved.
+    #
+    # returns nothing, plots spectrum of j for given params and saves data. Used for Fig. 3.2
+
+    # get relevant parameters
     Delta = params[8]
 
+    # number of points used in integrand_j_enhance peaks
     points_enhance = 200
 
+    # init arrays
     energy_arr = np.zeros((len(phi_arr), points))
     energy_arr_enhanced = np.zeros((len(phi_arr), points+points_enhance))
     dj_dE = np.zeros((len(phi_arr), points), dtype=np.complex_)
     dj_dE_enhanced = np.zeros((len(phi_arr), points+points_enhance), dtype=np.complex_)
 
+    # evaluate spectrum of j for each phi
     for i, phi in enumerate(phi_arr):
         Delta_ul = calc_delta(params, phi)
         params = update_params(params, 9, Delta_ul)
@@ -611,6 +709,7 @@ def plot_j_kernel_phi(E_cutoff, phi_arr, points, params, save_string):
     plt.figure(figsize=(20, 11))
     plt.tight_layout()
 
+    # plot the data
     for i in range(len(phi_arr)):
         plt.plot(energy_arr[i], np.real(dj_dE[i]), label="phi = " + str(np.round(phi_arr[i], 2)))
     plt.xlabel("E", fontsize=20)
@@ -621,19 +720,27 @@ def plot_j_kernel_phi(E_cutoff, phi_arr, points, params, save_string):
     plt.legend(fontsize=15)
     plt.show()
 
+    # save data
     if isinstance(save_string, str):
         np.save(save_string + "_j_kernel_array", dj_dE)
         np.save(save_string + "_phi_array", phi_arr)
         np.save(save_string + "_energy_array", energy_arr)
-        # plt.savefig(save_string + "_plot")
+        plt.savefig(save_string + "_plot")
 
 
 def calc_points(params):
+    # params: complex array, parameters of the system
+    #
+    # returns number of points used for the integral in Eg. (2.40). Low temperatures require more points than high
+    # temperatures
+
+    # get relevant params
     T_c = params[10]
     T = params[11]
 
     t = T / T_c
 
+    # values found empirically
     if t < 0.05:
         return 1000
     elif t < 0.21:
@@ -645,8 +752,19 @@ def calc_points(params):
 
 
 def plot_j_phi(parameter, parameter_index, parameter_string, phi_arr, params, save_string=False):
+    # parameter: real or complex float array, values of the parameter of which will be iterated (most often temperature)
+    # parameter_index: int, index in params
+    # parameter_string: string, name used for naming files, plots
+    # phi_arr: real float array, phase differences of the order parameters used for finding the critical current density
+    # params: complex array, parameters of the system
+    # save_string: string or not string, used to name saved data. if not string, nothing will be saved.
+    #
+    # returns nothing, plots of j(phi) for given params and saves data. Used for Fig. 3.3
+
+    # init j array
     j_phi = np.zeros((len(parameter), len(phi_arr)))
 
+    # iterate over parameter values
     for k, p in enumerate(parameter):
         params = update_params(params, parameter_index, p)
 
@@ -655,6 +773,7 @@ def plot_j_phi(parameter, parameter_index, parameter_string, phi_arr, params, sa
 
         points = calc_points(params)
 
+        # iterate over phase differences
         for l , phi in enumerate(phi_arr):
             Delta_ul = calc_delta(params, phi)
             params = update_params(params, 9, Delta_ul)
@@ -665,6 +784,7 @@ def plot_j_phi(parameter, parameter_index, parameter_string, phi_arr, params, sa
 
     print("Total time: ", time()-START_TIME, "s")
 
+    # plot values
     plt.figure(figsize=(20, 11))
     plt.tight_layout()
     for k, p in enumerate(parameter):
@@ -678,6 +798,7 @@ def plot_j_phi(parameter, parameter_index, parameter_string, phi_arr, params, sa
             params[0], params[1], params[2], params[3], params[4], params[6], np.round(params, 2)), fontsize=10)
     plt.legend(fontsize=15)
 
+    # save values
     if isinstance(save_string, str):
         np.save(save_string + "_j_array", j_phi)
         np.save(save_string + "_phi_array", phi_arr)
@@ -709,6 +830,7 @@ def main():
 
     delta_contour = 1
 
+    # PARAMS
     #         0    1   2    3    4   5   6        7        8           9              10  11    12
     params = [E_F, V1, V2u, V2d, V3, k0, width_u, width_d, Delta_init, Delta_ul_init, Tc, Temp, delta_contour]
 
@@ -716,6 +838,7 @@ def main():
 
 
     #####dimensions######
+    # length of coresponding arrays
     DIM_barrier_width = 300
     DIM_phi = 45
     DIM_V2d = 25
@@ -737,58 +860,10 @@ def main():
     V2d_arr = np.logspace(np.log10(V2u), 4, DIM_V2d)
     width_d_arr = np.linspace(0.001, 8, DIM_barrier_width) / kappa0_d
 
+    # PLOTS
     print(save_string)
-    # plot_j_phi(width_d_arr, 7, "T", phi_arr, params, save_string)
+    plot_j_phi(width_d_arr, 7, "T", phi_arr, params, save_string)
     # plot_j_kernel_phi(2.5, phi_arr, 1000, params, save_string)
 
-    v1 = params[1]
-    v2u = params[2]
-    v2d = params[3]
-    v3 = params[4]
-    d_u = params[6]
-    d_d = params[7]
-
-    params = tuple(params)
-    DIM_kp = 10000
-    kp_arr = np.linspace(0, k0, DIM_kp, endpoint=False)
-    ptu_arr = np.zeros(DIM_kp)
-    ptd_arr = np.zeros(DIM_kp)
-    sma_arr = np.zeros(DIM_kp)
-
-    for i, k_p in enumerate(kp_arr):
-        k1 = calc_k(v1, E_F, k0, k_p)
-        kappa_u = calc_k(v2u, E_F, k0, k_p)
-        kappa_d = calc_k(v2d, E_F, k0, k_p)
-        k3 = calc_k(v3, E_F, k0, k_p)
-
-        r_u, gamma_u = calc_r_gamma(k1, kappa_u, k3, d_u)
-        r_d, gamma_d = calc_r_gamma(k1, kappa_d, k3, d_d)
-        ptu_arr[i] = np.abs(gamma_u) ** 2
-        ptd_arr[i] = np.abs(gamma_d) ** 2
-
-        S, Sul = calc_S_Sul(k_p, tuple(params))
-        theta_u = np.angle(S[0, 0])
-        theta_d = np.angle(S[1, 1])
-
-        sma_arr[i] = (theta_u-theta_d)/np.pi
-
-    kp_arr = np.real(kp_arr/k0)
-
-    np.save(save_string + "_kp", kp_arr)
-    np.save(save_string + "_ptu", ptu_arr)
-    np.save(save_string + "_ptd", ptd_arr)
-    np.save(save_string + "_sma", sma_arr)
-    #
-    # print("T^2 u: ", np.abs(gamma_u)**2)
-    # print("T^2 d: ", np.abs(gamma_d) ** 2)
-    #
-    # S, Sul = calc_S_Sul(k_p, tuple(params))
-    # theta_u = np.angle(S[0, 0])
-    # theta_d = np.angle(S[1, 1])
-    # print("theta_u-theta_d:     ", (theta_u-theta_d)/np.pi, " pi")
-    #
-    # theta_u = np.angle(Sul[0, 0])
-    # theta_d = np.angle(Sul[1, 1])
-    # print("ul: theta_u-theta_d: ", (theta_u - theta_d) / np.pi, " pi")
-
+    
 main()
